@@ -9,12 +9,27 @@ import projectRoutes from './routes/projectRoutes';
 import { setDbPool } from './controllers/projectController';
 
 const app = express();
-const port = process.env.PORT || '5000'; // Keep as string for process.env, parseInt later
+const port = process.env.PORT || '5000';
 const host = '0.0.0.0'; // Explicitly bind to all network interfaces for container environments
 
-// CORS configuration
+// Define allowed origins from an environment variable (comma-separated)
+// Fallback to localhost for local development if FRONTEND_URLS is not set
+const allowedOrigins = process.env.FRONTEND_URLS ?
+  process.env.FRONTEND_URLS.split(',').map(url => url.trim()) :
+  ['http://localhost:3000'];
+
+// CORS configuration - UPDATED to handle multiple origins
 const corsOptions = {
-  origin: process.env.FRONTEND_URL, // This will be 'https://gitstack.xyz' in production
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // Allow requests with no origin (like mobile apps, curl, or same-origin requests)
+    // and requests from explicitly allowed origins.
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS: Origin ${origin} not allowed.`);
+      callback(new Error(`Origin ${origin} not allowed by CORS`));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
@@ -30,9 +45,10 @@ console.log('PORT:', port);
 console.log('DB_USER:', process.env.DB_USER);
 console.log('DB_HOST:', process.env.DB_HOST);
 console.log('DB_NAME:', process.env.DB_NAME);
-console.log('DB_PASSWORD:', process.env.DB_PASSWORD);
+console.log('DB_PASSWORD:', process.env.DB_PASSWORD ? '********' : 'NOT SET'); // Mask password in logs
 console.log('DB_PORT:', process.env.DB_PORT);
-console.log('FRONTEND_URL:', process.env.FRONTEND_URL);
+console.log('FRONTEND_URLS:', process.env.FRONTEND_URLS); // UPDATED log
+console.log('Allowed Origins (parsed):', allowedOrigins); // NEW: log parsed origins for verification
 console.log('-----------------------------------');
 
 // Set up PostgreSQL connection pool
@@ -43,11 +59,13 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   port: parseInt(process.env.DB_PORT || '5432', 10),
   ssl: {
-    rejectUnauthorized: false // Required for Supabase in some environments, adjust for production
+    // In production, consider tighter SSL cert verification
+    // For now, this is often needed for cloud databases from local dev or container envs
+    rejectUnauthorized: false
   }
 });
 
-// NEW: Centralized async startup function
+// Centralized async startup function
 async function startServer() {
   let client;
   try {
@@ -82,8 +100,8 @@ async function startServer() {
   });
 
   // Start the server
-  app.listen(parseInt(port, 10), host, () => { // ADDED 'host' here
-    console.log(`Server running on port ${port} on host ${host}`); // Updated log
+  app.listen(parseInt(port, 10), host, () => {
+    console.log(`Server running on port ${port} on host ${host}`);
   });
 }
 
