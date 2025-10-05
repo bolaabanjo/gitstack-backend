@@ -1,109 +1,168 @@
 // backend/src/server.ts
-import dotenv from 'dotenv';
-dotenv.config(); // Load environment variables from .env file
+import dotenv from "dotenv";
+dotenv.config();
 
-import express from 'express';
-import { Pool } from 'pg';
-import cors from 'cors'; // Import cors middleware
-import projectRoutes from './routes/projectRoutes';
-import { setDbPool } from './controllers/projectController';
+import express, { Request, Response, NextFunction } from "express";
+import cors from "cors";
+import { Pool } from "pg";
+import projectRoutes from "./routes/projectRoutes";
+import { setDbPool } from "./controllers/projectController";
 
+// -------------------------
+// Environment Validation
+// -------------------------
+const requiredEnvVars = [
+  "DB_USER",
+  "DB_HOST",
+  "DB_PASSWORD",
+  "DB_NAME",
+  "DB_PORT",
+  "FRONTEND_URL",
+];
+for (const key of requiredEnvVars) {
+  if (!process.env[key]) {
+    console.error(`Missing environment variable: ${key}`);
+    process.exit(1);
+  }
+}
+
+// -------------------------
+// App Setup
+// -------------------------
 const app = express();
-// Ensure we explicitly use the PORT environment variable if set by the hosting platform
-const port = process.env.PORT || '5000'; // Keep as string for process.env, parseInt later
+const PORT = process.env.PORT ?? "5000";
 
-// CORS configuration
-const corsOptions = {
-  origin: process.env.FRONTEND_URL, // This will be 'https://gitstack.xyz' in production
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-};
-app.use(cors(corsOptions)); // Use CORS middleware
-
-// Middleware to parse JSON bodies
+// -------------------------
+// Middleware
+// -------------------------
 app.use(express.json());
 
-// Log environment variables for debugging on Railway
-console.log('--- Backend Environment Variables ---');
-console.log('PORT:', port);
-console.log('DB_USER:', process.env.DB_USER);
-console.log('DB_HOST:', process.env.DB_HOST);
-console.log('DB_NAME:', process.env.DB_NAME);
-console.log('DB_PORT:', process.env.DB_PORT);
-console.log('FRONTEND_URL:', process.env.FRONTEND_URL);
-console.log('-----------------------------------');
+// CORS — allow only known origins
+const allowedOrigins = [
+  process.env.FRONTEND_URL, // primary domain
+  "http://localhost:3000", // dev
+  "https://gitstack.vercel.app", // optional preview
+  "https://www.gitstack.xyz", // www variant
+].filter(Boolean);
 
-// Set up PostgreSQL connection pool
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.warn(`CORS blocked request from origin: ${origin}`);
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+
+// -------------------------
+// Database Connection
+// -------------------------
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  ssl: {
-    rejectUnauthorized: false // Required for Supabase in some environments, adjust for production
-  }
+  port: parseInt(process.env.DB_PORT || "5432", 10),
+  ssl: { rejectUnauthorized: false },
 });
 
-// Test database connection with async/await for better error handling
+// Test DB connection immediately on startup
 (async () => {
   let client;
   try {
     client = await pool.connect();
-    const result = await client.query('SELECT NOW()');
-    console.log('Database connected:', result.rows[0].now);
+    const result = await client.query("SELECT NOW()");
+    console.log(`✅ Database connected: ${result.rows[0].now}`);
   } catch (err) {
-    console.error('CRITICAL ERROR: Failed to connect to database', err instanceof Error ? err.stack : err);
-    // Exit if we can't connect to the database, as the app won't function
+    console.error("CRITICAL: Failed to connect to database");
+    console.error(err instanceof Error ? err.stack : err);
     process.exit(1);
   } finally {
-    if (client) {
-      client.release();
-    }
+    client?.release();
   }
 })();
 
-// Pass the database pool to the project controller
+// Share pool with controllers
 setDbPool(pool);
 
-// Basic route
-app.get('/', (req, res) => {
-  res.send('Hello from the Gitstack backend!');
+// -------------------------
+// Routes
+// -------------------------
+
+// Health check — used by Railway, Vercel, or uptime monitors
+app.get("/health", (req: Request, res: Response) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Use project routes
-app.use('/api/projects', projectRoutes);
-
-// NEW: Basic Error Handling Middleware (must be after all routes)
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Unhandled Error caught by middleware:', err.stack);
-  res.status(500).send('Something broke on the server!');
+// Root route
+app.get("/", (req: Request, res: Response) => {
+  res.send("Gitstack Backend is running.");
 });
 
-// Start the server
-app.listen(parseInt(port, 10), () => { // Parse port to integer here
-  console.log(`Server running on port ${port}`);
+// API routes
+app.use("/api/projects", projectRoutes);
+
+// -------------------------
+// 404 Handler
+// -------------------------
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    error: "Not Found",
+    message: `The route ${req.originalUrl} does not exist.`,
+  });
 });
 
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('Shutting down server...');
-  await pool.end(); // Close the database connection pool
-  console.log('Database connection pool closed.');
+// -------------------------
+// Global Error Handler
+// -------------------------
+app.use(
+  (err: Error, req: Request, res: Response, next: NextFunction) => {
+    console.error("🔥 Unhandled Error:", err.stack || err.message);
+    res.status(500).json({
+      error: "Internal Server Error",
+      message: err.message,
+    });
+  }
+);
+
+// -------------------------
+// Server Start
+// -------------------------
+app.listen(parseInt(PORT, 10), () => {
+  console.log("===================================");
+  console.log(`Gitstack backend running on port ${PORT}`);
+  console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
+  console.log(`Connected to database: ${process.env.DB_NAME}`);
+  console.log("===================================");
+});
+
+// -------------------------
+// Graceful Shutdown
+// -------------------------
+process.on("SIGINT", async () => {
+  console.log("\nShutting down server...");
+  await pool.end();
+  console.log("Database pool closed. Goodbye!");
   process.exit(0);
 });
 
-// NEW: Catch unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  // Log the error, but don't exit the process immediately unless it's critical.
-  // In production, you might want to send an alert.
+// Catch unhandled rejections
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection:", reason);
 });
 
-// NEW: Catch uncaught exceptions
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error.stack);
-  // This is a last resort. Always handle errors where they occur.
-  // In production, consider graceful shutdown and process restart (e.g., with PM2).
+// Catch uncaught exceptions
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error.stack || error.message);
 });
