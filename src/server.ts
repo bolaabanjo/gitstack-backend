@@ -5,8 +5,12 @@ dotenv.config(); // Load environment variables from .env file
 import express from 'express';
 import { Pool } from 'pg';
 import cors from 'cors'; // Import cors middleware
+
 import projectRoutes from './routes/projectRoutes';
-import { setDbPool } from './controllers/projectController';
+import userRoutes from './routes/userRoutes'; // NEW: Import user routes
+
+import { setDbPool as setProjectDbPool } from './controllers/projectController'; // Renamed import
+import { setDbPool as setUserDbPool } from './controllers/userController';     // NEW: Import and rename
 
 const app = express();
 const port = process.env.PORT || '5000';
@@ -59,8 +63,6 @@ const pool = new Pool({
   password: process.env.DB_PASSWORD,
   port: parseInt(process.env.DB_PORT || '5432', 10),
   ssl: {
-    // In production, consider tighter SSL cert verification
-    // For now, this is often needed for cloud databases from local dev or container envs
     rejectUnauthorized: false
   }
 });
@@ -69,28 +71,29 @@ const pool = new Pool({
 async function startServer() {
   let client;
   try {
-    // Attempt to connect and query to verify database is reachable
     client = await pool.connect();
     await client.query('SELECT NOW()');
     console.log('Database connected successfully.');
   } catch (err) {
     console.error('CRITICAL ERROR: Failed to connect to database. Exiting.', err instanceof Error ? err.stack : err);
-    process.exit(1); // Exit if DB connection is critical for startup
+    process.exit(1);
   } finally {
     if (client) {
       client.release();
     }
   }
 
-  // Pass the database pool to the project controller after successful connection
-  setDbPool(pool);
+  // Pass the database pool to *both* controllers after successful connection
+  setProjectDbPool(pool); // UPDATED: Use renamed import
+  setUserDbPool(pool);     // NEW: Pass pool to user controller
 
   // Basic route
   app.get('/', (req, res) => {
     res.send('Hello from the Gitstack backend!');
   });
 
-  // Use project routes
+  // Use NEW user routes first, then project routes
+  app.use('/api/users', userRoutes);   // NEW: Mount user routes
   app.use('/api/projects', projectRoutes);
 
   // Basic Error Handling Middleware (must be after all routes)
@@ -108,7 +111,7 @@ async function startServer() {
 // Invoke the startup function
 startServer();
 
-// Handle graceful shutdown (moved outside startServer for global scope)
+// Handle graceful shutdown
 process.on('SIGINT', async () => {
   console.log('Shutting down server...');
   await pool.end(); // Close the database connection pool
