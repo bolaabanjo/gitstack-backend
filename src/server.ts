@@ -3,18 +3,22 @@ import dotenv from 'dotenv';
 dotenv.config(); // Load environment variables from .env file
 
 import express from 'express';
-import { Pool } from 'pg';
+import pg, { Pool } from 'pg'; // NEW: Import pg itself to access types
 import cors from 'cors'; // Import cors middleware
 
 import projectRoutes from './routes/projectRoutes';
-import userRoutes from './routes/userRoutes'; // NEW: Import user routes
+import userRoutes from './routes/userRoutes';
 
-import { setDbPool as setProjectDbPool } from './controllers/projectController'; // Renamed import
-import { setDbPool as setUserDbPool } from './controllers/userController';     // NEW: Import and rename
+import { setDbPool as setProjectDbPool } from './controllers/projectController';
+import { setDbPool as setUserDbPool } from './controllers/userController';
 
 const app = express();
 const port = process.env.PORT || '5000';
 const host = '0.0.0.0'; // Explicitly bind to all network interfaces for container environments
+
+// NEW: Configure pg to parse BIGINT (INT8) as a Number (instead of string)
+// This is crucial for date-fns to correctly interpret timestamps.
+pg.types.setTypeParser(pg.types.builtins.INT8, (val: string) => parseInt(val, 10));
 
 // Define allowed origins from an environment variable (comma-separated)
 // Fallback to localhost for local development if FRONTEND_URLS is not set
@@ -22,11 +26,9 @@ const allowedOrigins = process.env.FRONTEND_URLS ?
   process.env.FRONTEND_URLS.split(',').map(url => url.trim()) :
   ['http://localhost:3000'];
 
-// CORS configuration - UPDATED to handle multiple origins
+// CORS configuration
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    // Allow requests with no origin (like mobile apps, curl, or same-origin requests)
-    // and requests from explicitly allowed origins.
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -51,8 +53,8 @@ console.log('DB_HOST:', process.env.DB_HOST);
 console.log('DB_NAME:', process.env.DB_NAME);
 console.log('DB_PASSWORD:', process.env.DB_PASSWORD ? '********' : 'NOT SET'); // Mask password in logs
 console.log('DB_PORT:', process.env.DB_PORT);
-console.log('FRONTEND_URLS:', process.env.FRONTEND_URLS); // UPDATED log
-console.log('Allowed Origins (parsed):', allowedOrigins); // NEW: log parsed origins for verification
+console.log('FRONTEND_URLS:', process.env.FRONTEND_URLS);
+console.log('Allowed Origins (parsed):', allowedOrigins);
 console.log('-----------------------------------');
 
 // Set up PostgreSQL connection pool
@@ -83,48 +85,39 @@ async function startServer() {
     }
   }
 
-  // Pass the database pool to *both* controllers after successful connection
-  setProjectDbPool(pool); // UPDATED: Use renamed import
-  setUserDbPool(pool);     // NEW: Pass pool to user controller
+  setProjectDbPool(pool);
+  setUserDbPool(pool);
 
-  // Basic route
   app.get('/', (req, res) => {
     res.send('Hello from the Gitstack backend!');
   });
 
-  // Use NEW user routes first, then project routes
-  app.use('/api/users', userRoutes);   // NEW: Mount user routes
+  app.use('/api/users', userRoutes);
   app.use('/api/projects', projectRoutes);
 
-  // Basic Error Handling Middleware (must be after all routes)
   app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error('Unhandled Error caught by middleware:', err.stack);
     res.status(500).send('Something broke on the server!');
   });
 
-  // Start the server
   app.listen(parseInt(port, 10), host, () => {
     console.log(`Server running on port ${port} on host ${host}`);
   });
 }
 
-// Invoke the startup function
 startServer();
 
-// Handle graceful shutdown
 process.on('SIGINT', async () => {
   console.log('Shutting down server...');
-  await pool.end(); // Close the database connection pool
+  await pool.end();
   console.log('Database connection pool closed.');
   process.exit(0);
 });
 
-// Catch unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Catch uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error.stack);
 });
