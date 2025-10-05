@@ -8,9 +8,11 @@ import cors from 'cors'; // Import cors middleware
 
 import projectRoutes from './routes/projectRoutes';
 import userRoutes from './routes/userRoutes';
+import cliAuthRoutes from './routes/cliAuthRoutes'; // NEW: Import cliAuthRoutes
 
 import { setDbPool as setProjectDbPool } from './controllers/projectController';
 import { setDbPool as setUserDbPool } from './controllers/userController';
+import { setDbPool as setCliAuthDbPool } from './controllers/cliAuthController'; // NEW: Import setDbPool for cliAuthController
 
 const app = express();
 const port = process.env.PORT || '5000';
@@ -87,6 +89,7 @@ async function startServer() {
 
   setProjectDbPool(pool);
   setUserDbPool(pool);
+  setCliAuthDbPool(pool); // NEW: Set the DB pool for cliAuthController
 
   app.get('/', (req, res) => {
     res.send('Hello from the Gitstack backend!');
@@ -94,7 +97,9 @@ async function startServer() {
 
   app.use('/api/users', userRoutes);
   app.use('/api/projects', projectRoutes);
+  app.use('/api/cli-auth', cliAuthRoutes); // NEW: Mount CLI auth routes
 
+  // Error handling middleware
   app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error('Unhandled Error caught by middleware:', err.stack);
     res.status(500).send('Something broke on the server!');
