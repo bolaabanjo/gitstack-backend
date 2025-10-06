@@ -89,3 +89,45 @@ CREATE TABLE IF NOT EXISTS snapshot_files (
 
 -- Index for snapshot_files table
 CREATE INDEX IF NOT EXISTS idx_snapshot_files_snapshot_id ON snapshot_files (snapshot_id);
+
+-- Branches: point to a head snapshot (like Git refs)
+CREATE TABLE IF NOT EXISTS branches (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  head_snapshot_id UUID REFERENCES snapshots(id) ON DELETE SET NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+-- Tags: human-friendly labels pointing to a snapshot
+CREATE TABLE IF NOT EXISTS tags (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  snapshot_id UUID NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+  created_at BIGINT NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+-- Project README per branch (simple, mutable doc)
+CREATE TABLE IF NOT EXISTS project_readmes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  branch TEXT NOT NULL DEFAULT 'main',
+  content TEXT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  UNIQUE (project_id, branch)
+);
+
+-- Helper view: latest snapshot per project, for default 'main' bootstrap
+CREATE OR REPLACE VIEW latest_project_snapshot AS
+SELECT s.*
+FROM snapshots s
+JOIN (
+  SELECT project_id, MAX(timestamp) AS max_ts
+  FROM snapshots
+  GROUP BY project_id
+) t ON t.project_id = s.project_id AND t.max_ts = s.timestamp;
