@@ -101,11 +101,39 @@ export const getProjectById = async (req: Request, res: Response) => {
   }
 };
 
-// Placeholder for future update/delete operations
+// Placeholder for future update operations
 export const updateProject = async (req: Request, res: Response) => {
-  res.status(501).json({ message: 'Not yet implemented.' });
+  // We'll implement this fully later if needed for editing project details
+  res.status(501).json({ message: 'Update Project Not yet implemented.' });
 };
 
+// Delete a project by its ID
 export const deleteProject = async (req: Request, res: Response) => {
-  res.status(501).json({ message: 'Not yet implemented.' });
+  const { id } = req.params; // Project ID from URL parameter
+
+  if (!id) {
+    return res.status(400).json({ error: 'Project ID is required.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `DELETE FROM projects
+       WHERE id = $1
+       RETURNING id`, // Return the ID of the deleted project
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found.' });
+    }
+
+    res.status(200).json({ message: 'Project deleted successfully.', id: result.rows[0].id });
+
+  } catch (error) {
+    console.error('Error deleting project:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
 };
