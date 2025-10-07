@@ -244,6 +244,125 @@ export const createFolder = async (req: Request, res: Response) => {
   }
 };
 
+// --- NEW: File/Folder Deletion Endpoints ---
+
+export const deleteFile = async (req: Request, res: Response) => {
+  const { id: projectId } = req.params;
+  const { branch, path: filePath, userId } = req.body as {
+    branch: string;
+    path: string;
+    userId: string;
+  };
+
+  if (!branch || !filePath || !userId) {
+    return res.status(400).json({ error: 'Branch, path, and userId are required.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const currentSnapshotId = await resolveSnapshotId(client, projectId, branch);
+    if (!currentSnapshotId) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Branch or project has no snapshots.' });
+    }
+
+    const existingFiles = await getFilesInSnapshot(client, currentSnapshotId);
+
+    // Filter out the file to be deleted
+    const updatedFiles = existingFiles.filter(f => f.path !== filePath);
+
+    if (existingFiles.length === updatedFiles.length) {
+      // File was not found in the current snapshot
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: `File not found at path: ${filePath}` });
+    }
+
+    // Create new snapshot with the file removed
+    const newSnapshotId = await createNewSnapshot(
+      client,
+      projectId,
+      userId,
+      updatedFiles,
+      `Delete file: ${filePath}`
+    );
+
+    // Update branch head
+    await updateBranchHead(client, projectId, branch, newSnapshotId);
+
+    await client.query('COMMIT');
+    res.status(200).json({ snapshotId: newSnapshotId, deletedPath: filePath });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('deleteFile error', e);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+};
+
+export const deleteFolder = async (req: Request, res: Response) => {
+  const { id: projectId } = req.params;
+  const { branch, path: folderPath, userId } = req.body as {
+    branch: string;
+    path: string;
+    userId: string;
+  };
+
+  if (!branch || !folderPath || !userId) {
+    return res.status(400).json({ error: 'Branch, path, and userId are required.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const currentSnapshotId = await resolveSnapshotId(client, projectId, branch);
+    if (!currentSnapshotId) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Branch or project has no snapshots.' });
+    }
+
+    const existingFiles = await getFilesInSnapshot(client, currentSnapshotId);
+
+    const folderPrefix = folderPath.endsWith('/') ? folderPath : folderPath + '/';
+
+    // Filter out all files and folders that are descendants of the folder to be deleted
+    // This includes any .gitkeep file within the folder
+    const updatedFiles = existingFiles.filter(f => !f.path.startsWith(folderPrefix));
+
+    if (existingFiles.length === updatedFiles.length) {
+        // No files were removed, implying the folder (or its contents) didn't exist
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: `Folder not found or already empty at path: ${folderPath}` });
+    }
+
+
+    // Create new snapshot with the folder and its contents removed
+    const newSnapshotId = await createNewSnapshot(
+      client,
+      projectId,
+      userId,
+      updatedFiles,
+      `Delete folder: ${folderPath}`
+    );
+
+    // Update branch head
+    await updateBranchHead(client, projectId, branch, newSnapshotId);
+
+    await client.query('COMMIT');
+    res.status(200).json({ snapshotId: newSnapshotId, deletedPath: folderPath });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('deleteFolder error', e);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+};
+
+
 
 // GET /api/projects/:id/branches, getTags, getTree, getBlob, getReadme, updateReadme, getContributors (existing functions)
 // ... (all your existing codeController.ts functions go here after the new ones) ...

@@ -8,8 +8,10 @@ import {
   getReadme,
   updateReadme,
   getContributors,
-  createFile, // NEW: Import createFile
-  createFolder, // NEW: Import createFolder
+  createFile,
+  createFolder,
+  deleteFile,   // NEW: Import deleteFile
+  deleteFolder, // NEW: Import deleteFolder
 } from '../controllers/codeController';
 
 const router = Router();
@@ -22,7 +24,9 @@ router.get('/:id/blob', getBlob);
 router.get('/:id/readme', getReadme);
 router.put('/:id/readme', updateReadme);
 router.get('/:id/contributors', getContributors);
-router.post('/:id/files', createFile);     // NEW: Route for creating files
-router.post('/:id/folders', createFolder); // NEW: Route for creating folders
+router.post('/:id/files', createFile);
+router.post('/:id/folders', createFolder);
+router.delete('/:id/files', deleteFile);     // NEW: Route for deleting files
+router.delete('/:id/folders', deleteFolder); // NEW: Route for deleting folders
 
 export default router;
