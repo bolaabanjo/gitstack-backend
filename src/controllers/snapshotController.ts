@@ -1,6 +1,7 @@
 // backend/src/controllers/snapshotController.ts
 import { Request, Response } from 'express';
 import { Pool } from 'pg';
+import { supabaseService, SUPABASE_BUCKET_NAME } from '../services/supabase'; // NEW: Import Supabase client and bucket name
 
 let pool: Pool;
 
@@ -14,6 +15,7 @@ interface FileData {
   hash: string;
   size?: number; // Optional, CLI might not provide directly
   mode?: number; // Optional
+  content?: string;
 }
 
 interface SnapshotPayload {
@@ -44,8 +46,8 @@ export const createSnapshot = async (req: Request, res: Response) => {
 
     // Insert into snapshots table
     const snapshotResult = await client.query(
-      `INSERT INTO snapshots (project_id, user_id, title, description, timestamp, file_count, external_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO snapshots (project_id, user_id, title, description, timestamp, file_count, external_id)\r
+       VALUES ($1, $2, $3, $4, $5, $6, $7)\r
        RETURNING id, project_id, user_id, title, description, timestamp, file_count, external_id`,
       [projectId, userId, title, description, timestamp, fileCount, externalId]
     );
@@ -53,13 +55,33 @@ export const createSnapshot = async (req: Request, res: Response) => {
 
     // If there are files, insert them into snapshot_files table
     if (files.length > 0) {
-      const fileInsertPromises = files.map(file =>
-        client.query(
-          `INSERT INTO snapshot_files (snapshot_id, path, hash, size, mode)
+      const fileInsertPromises = files.map(async (file) => {
+        // Upload content to Supabase if provided
+        if (file.content) {
+          const contentBuffer = Buffer.from(file.content, 'base64');
+          const filePathInStorage = `${projectId}/${newSnapshot.id}/${file.hash}`; // Store by project/snapshot/hash
+
+          const { error: uploadError } = await supabaseService.storage
+            .from(SUPABASE_BUCKET_NAME)
+            .upload(filePathInStorage, contentBuffer, {
+              cacheControl: '3600',
+              upsert: true, // Allow overwriting if hash is the same (e.g., retries)
+              contentType: 'application/octet-stream', // Generic, can be improved with mime detection
+            });
+
+          if (uploadError) {
+            console.error(`Supabase upload error for file ${file.path}:`, uploadError.message);
+            throw new Error(`Failed to upload file content for ${file.path}`);
+          }
+        }
+
+        // Insert file metadata into PostgreSQL
+        return client.query(
+          `INSERT INTO snapshot_files (snapshot_id, path, hash, size, mode)\r
            VALUES ($1, $2, $3, $4, $5)`,
           [newSnapshot.id, file.path, file.hash, file.size, file.mode]
-        )
-      );
+        );
+      });
       await Promise.all(fileInsertPromises);
     }
 
@@ -163,19 +185,46 @@ export const deleteSnapshot = async (req: Request, res: Response) => {
 
   const client = await pool.connect();
   try {
+    // Before deleting the snapshot record, find its files to delete from Supabase
+    const filesResult = await client.query(
+      `SELECT path, hash FROM snapshot_files WHERE snapshot_id = $1`,
+      [id]
+    );
+
+    await client.query('BEGIN'); // Start transaction for DB deletion
+
     // Due to ON DELETE CASCADE, deleting the snapshot will automatically delete
     // associated snapshot_files.
     const result = await client.query(
       `DELETE FROM snapshots
        WHERE id = $1
-       RETURNING id`, // Return the ID of the deleted snapshot
+       RETURNING id, project_id`, // Also return project_id to construct Supabase paths
       [id]
     );
 
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Snapshot not found.' });
     }
-    res.status(200).json({ message: 'Snapshot deleted successfully.', id: result.rows[0].id });
+    const { id: deletedSnapshotId, project_id: deletedProjectId } = result.rows[0];
+
+    // Delete files from Supabase Storage
+    if (filesResult.rows.length > 0 && deletedProjectId) {
+      const pathsToDelete = filesResult.rows.map(
+        (file) => `${deletedProjectId}/${deletedSnapshotId}/${file.hash}`
+      );
+      const { error: deleteError } = await supabaseService.storage
+        .from(SUPABASE_BUCKET_NAME)
+        .remove(pathsToDelete);
+
+      if (deleteError) {
+        console.error(`Supabase delete error for snapshot ${deletedSnapshotId}:`, deleteError.message);
+        // Do not throw here, as the DB deletion was successful. Log and continue.
+      }
+    }
+
+    await client.query('COMMIT'); // Commit DB transaction
+    res.status(200).json({ message: 'Snapshot deleted successfully.', id: deletedSnapshotId });
 
   } catch (error) {
     console.error('Error deleting snapshot:', error);
