@@ -89,34 +89,37 @@ export const createFile = async (req: Request, res: Response) => {
   };
 
   if (!branch || !filePath || typeof content !== 'string' || !userId) {
+    console.error('createFile: Missing required fields (branch, path, content, userId).');
     return res.status(400).json({ error: 'Branch, path, content, and userId are required.' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    console.log(`createFile: Starting transaction for project ${projectId}, branch ${branch}, path ${filePath}`);
 
     const currentSnapshotId = await resolveSnapshotId(client, projectId, branch);
     let existingFiles: Array<{ path: string; hash: string; size: number; mode: number }> = [];
     if (currentSnapshotId) {
       existingFiles = await getFilesInSnapshot(client, currentSnapshotId);
+      console.log(`createFile: Found existing snapshot ${currentSnapshotId} with ${existingFiles.length} files.`);
+    } else {
+      console.log('createFile: No current snapshot, starting with empty file list.');
     }
 
-    // Hash the new file's content
     const contentBuffer = Buffer.from(content, 'base64');
     const fileHash = crypto.createHash('sha256').update(contentBuffer).digest('hex');
     const fileSize = contentBuffer.byteLength;
-    const fileMode = 644; // Default file mode
+    const fileMode = 644;
 
-    // Check for existing file at path and remove it (effectively an overwrite/update)
     const filteredFiles = existingFiles.filter(f => f.path !== filePath);
-
-    // Add the new file
     const newFile = { path: filePath, hash: fileHash, size: fileSize, mode: fileMode };
     const allFiles = [...filteredFiles, newFile];
+    console.log(`createFile: New file ${filePath} with hash ${fileHash}, size ${fileSize}. Total files for new snapshot: ${allFiles.length}`);
 
-    // Upload content to Supabase
-    const filePathInStorage = `${projectId}/${newFile.hash}`; // Store by project/hash for deduplication
+    // Supabase Upload
+    const filePathInStorage = `${projectId}/${newFile.hash}`;
+    console.log(`createFile: Attempting Supabase upload to bucket "${SUPABASE_BUCKET_NAME}", path "${filePathInStorage}"`);
     const { error: uploadError } = await supabaseService.storage
       .from(SUPABASE_BUCKET_NAME)
       .upload(filePathInStorage, contentBuffer, {
@@ -126,11 +129,12 @@ export const createFile = async (req: Request, res: Response) => {
       });
 
     if (uploadError) {
-      console.error(`Supabase upload error for file ${filePath}:`, uploadError.message);
-      throw new Error(`Failed to upload file content for ${filePath}`);
+      console.error(`createFile: Supabase upload FAILED for file ${filePath}:`, uploadError.message, uploadError);
+      throw new Error(`Failed to upload file content for ${filePath} to Supabase: ${uploadError.message}`);
     }
+    console.log(`createFile: Supabase upload SUCCESS for file ${filePath}.`);
 
-    // Create new snapshot
+
     const newSnapshotId = await createNewSnapshot(
       client,
       projectId,
@@ -138,18 +142,21 @@ export const createFile = async (req: Request, res: Response) => {
       allFiles,
       `Create file: ${filePath}`
     );
+    console.log(`createFile: Created new snapshot ${newSnapshotId}.`);
 
-    // Update branch head
     await updateBranchHead(client, projectId, branch, newSnapshotId);
+    console.log(`createFile: Updated branch ${branch} to point to snapshot ${newSnapshotId}.`);
 
     await client.query('COMMIT');
+    console.log('createFile: Transaction committed successfully.');
     res.status(201).json({ snapshotId: newSnapshotId, newFile });
-  } catch (e) {
+  } catch (e: any) { // Catch as 'any' for simpler logging
     await client.query('ROLLBACK');
-    console.error('createFile error', e);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('createFile: Transaction rolled back. Error details:', e.message, e.stack || e);
+    res.status(500).json({ error: e.message || 'Internal server error' }); // Return specific error message
   } finally {
     client.release();
+    console.log('createFile: Database client released.');
   }
 };
 
@@ -162,34 +169,39 @@ export const createFolder = async (req: Request, res: Response) => {
   };
 
   if (!branch || !folderPath || !userId) {
+    console.error('createFolder: Missing required fields (branch, path, userId).');
     return res.status(400).json({ error: 'Branch, path, and userId are required.' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    console.log(`createFolder: Starting transaction for project ${projectId}, branch ${branch}, folder ${folderPath}`);
 
     const currentSnapshotId = await resolveSnapshotId(client, projectId, branch);
     let existingFiles: Array<{ path: string; hash: string; size: number; mode: number }> = [];
     if (currentSnapshotId) {
       existingFiles = await getFilesInSnapshot(client, currentSnapshotId);
+      console.log(`createFolder: Found existing snapshot ${currentSnapshotId} with ${existingFiles.length} files.`);
+    } else {
+      console.log('createFolder: No current snapshot, starting with empty file list for .gitkeep.');
     }
 
-    // Add a dummy .gitkeep file inside the new folder to make it visible
     const gitkeepPath = path.join(folderPath, '.gitkeep');
-    const gitkeepContent = Buffer.from(''); // Empty content
+    const gitkeepContent = Buffer.from('');
     const gitkeepHash = crypto.createHash('sha256').update(gitkeepContent).digest('hex');
     const gitkeepSize = 0;
     const gitkeepMode = 644;
 
-    // Check if gitkeepPath already exists and filter it out for overwrite
     const filteredFiles = existingFiles.filter(f => f.path !== gitkeepPath);
-
     const newGitkeepFile = { path: gitkeepPath, hash: gitkeepHash, size: gitkeepSize, mode: gitkeepMode };
     const allFiles = [...filteredFiles, newGitkeepFile];
+    console.log(`createFolder: New .gitkeep file ${gitkeepPath} for folder. Total files for new snapshot: ${allFiles.length}`);
 
-    // Upload empty content for .gitkeep to Supabase (if it doesn't exist)
+    // Supabase Upload for .gitkeep
     const filePathInStorage = `${projectId}/${newGitkeepFile.hash}`;
+    console.log(`createFolder: Attempting Supabase upload for .gitkeep to bucket "${SUPABASE_BUCKET_NAME}", path "${filePathInStorage}"`);
+
     const { error: uploadError } = await supabaseService.storage
       .from(SUPABASE_BUCKET_NAME)
       .upload(filePathInStorage, gitkeepContent, {
@@ -199,11 +211,14 @@ export const createFolder = async (req: Request, res: Response) => {
       });
 
     if (uploadError) {
-      console.error(`Supabase upload error for .gitkeep in ${folderPath}:`, uploadError.message);
-      // Don't throw, as the folder can still be created logically in DB
+      console.error(`createFolder: Supabase upload FAILED for .gitkeep in ${folderPath}:`, uploadError.message, uploadError);
+      // Do not throw here, as the folder can still be created logically in DB
+      // We will still create the snapshot entry even if .gitkeep content upload fails
+      console.warn(`createFolder: Continuing without .gitkeep content in storage due to upload error.`);
+    } else {
+      console.log(`createFolder: Supabase upload SUCCESS for .gitkeep in ${folderPath}.`);
     }
 
-    // Create new snapshot
     const newSnapshotId = await createNewSnapshot(
       client,
       projectId,
@@ -211,18 +226,21 @@ export const createFolder = async (req: Request, res: Response) => {
       allFiles,
       `Create folder: ${folderPath}`
     );
+    console.log(`createFolder: Created new snapshot ${newSnapshotId}.`);
 
-    // Update branch head
     await updateBranchHead(client, projectId, branch, newSnapshotId);
+    console.log(`createFolder: Updated branch ${branch} to point to snapshot ${newSnapshotId}.`);
 
     await client.query('COMMIT');
+    console.log('createFolder: Transaction committed successfully.');
     res.status(201).json({ snapshotId: newSnapshotId, newFolder: { path: folderPath, type: 'dir' } });
-  } catch (e) {
+  } catch (e: any) { // Catch as 'any' for simpler logging
     await client.query('ROLLBACK');
-    console.error('createFolder error', e);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('createFolder: Transaction rolled back. Error details:', e.message, e.stack || e);
+    res.status(500).json({ error: e.message || 'Internal server error' }); // Return specific error message
   } finally {
     client.release();
+    console.log('createFolder: Database client released.');
   }
 };
 
